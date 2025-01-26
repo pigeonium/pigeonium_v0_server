@@ -5,7 +5,7 @@ def hex2bytes(hex: str, length:int = None) -> bytes:
     return b
 
 class Node:
-    port:int = 14510
+    port:int = 14513
     txResponseLimit:int = 200
     currenciesResponseLimit:int = 300
 
