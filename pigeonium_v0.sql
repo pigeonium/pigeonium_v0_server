@@ -42,7 +42,8 @@ ALTER TABLE `balance`
 ALTER TABLE `currency`
   ADD UNIQUE KEY `currencyId` (`currencyId`),
   ADD UNIQUE KEY `name` (`name`),
-  ADD UNIQUE KEY `symbol` (`symbol`);
+  ADD UNIQUE KEY `symbol` (`symbol`),
+  ADD UNIQUE KEY `previous` (`previous`);
 
 ALTER TABLE `transactions`
   ADD UNIQUE KEY `indexId` (`indexId`),
