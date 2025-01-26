@@ -47,8 +47,9 @@ async def networkInfo():
                        " VALUES (%(indexId)s,%(transactionId)s,%(timestamp)s,%(source)s,%(dest)s,%(currencyId)s,%(amount)s,%(previous)s,%(publicKey)s,%(adminSignature)s)",
                        genesis.toDict())
         cursor.execute("INSERT INTO `balance` (`address`, `currencyId`, `amount`) VALUES (%s, %s, %s)",(adminWallet.address, genesis.currencyId, genesis.amount))
-        cursor.execute("INSERT INTO `currency` (`currencyId`, `name`, `symbol`, `issuer`, `inputData`, `supply`) VALUES (%s, %s, %s, %s, %s, %s)",
-                       (genesis.currencyId,Config.Network.BaseCurrencyName,Config.Network.BaseCurrencySymbol,genesis.dest,bytes(),genesis.amount))
+        cursor.execute("INSERT INTO `currency` (`currencyId`, `name`, `symbol`, `issuer`, `inputData`, `supply`,`issuerSignature`,`publicKey`) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                       (genesis.currencyId,Config.Network.BaseCurrencyName,Config.Network.BaseCurrencySymbol,genesis.dest,bytes(),genesis.amount,
+                        adminWallet.sign(genesis.currencyId),adminWallet.publicKey))
         connection.commit()
         previousTxId = genesis.transactionId
     connection.close()
@@ -143,7 +144,9 @@ async def getCurrency(currencyId: str = None, name: str = None, symbol: str = No
     if result:
         result = result[0]
         response = {"currencyId": result['currencyId'].hex(), "name": result['name'], "symbol": result['symbol'],
-                    "issuer": result['issuer'].hex(), "inputData": result['inputData'].hex(), "supply": str(result['supply'])}
+                    "issuer": result['issuer'].hex(), "inputData": result['inputData'].hex(),
+                    "issuerSignature": result['issuerSignature'].hex(), "publicKey": result['publicKey'].hex(),
+                    "supply": str(result['supply'])}
     else:
         response = {}
     connection.close()
@@ -171,7 +174,9 @@ async def getCurrencies(sortBy:str = "id", sortOrder:str = "ASC"):
 
     for cu in results:
         response.append({"currencyId": cu['currencyId'].hex(), "name": cu['name'], "symbol": cu['symbol'],
-                         "issuer": cu['issuer'].hex(), "inputData": cu['inputData'].hex(), "supply": str(cu['supply'])})
+                         "issuer": cu['issuer'].hex(), "inputData": cu['inputData'].hex(),
+                         "issuerSignature": cu['issuerSignature'].hex(), "publicKey": cu['publicKey'].hex(),
+                         "supply": str(cu['supply'])})
     connection.close()
     return response
 
@@ -361,6 +366,7 @@ class IssuancePost(BaseModel):
     symbol:str
     inputData:str
     amount:int
+    issuerSignature:str
     publicKey:str
     senderPublicKey:str
     senderSignature:str
@@ -374,6 +380,7 @@ async def postIssuanceTransaction(IssuanceData: IssuancePost):
         senderSignature = bytes.fromhex(IssuanceData.senderSignature)
         issuerWallet = pigeonium.Wallet.fromPublic(bytes.fromhex(IssuanceData.publicKey))
         currencyId = bytes.fromhex(IssuanceData.currencyId)
+        issuerSignature = bytes.fromhex(IssuanceData.issuerSignature)
         inputData = bytes.fromhex(IssuanceData.inputData)
         if not strPattern(IssuanceData.name):
             raise HTTPException(400, "'name' is invalid format (0-9a-zA-Z_)")
@@ -387,18 +394,25 @@ async def postIssuanceTransaction(IssuanceData: IssuancePost):
     except Exception as e:
         raise e
     
-    newCurrency = pigeonium.Currency.create(IssuanceData.name,IssuanceData.symbol,issuerWallet.address,inputData)
+    newCurrency = pigeonium.Currency()
+    newCurrency.currencyId = currencyId
+    newCurrency.name,newCurrency.symbol = IssuanceData.name, IssuanceData.symbol
+    newCurrency.inputData,newCurrency.issuer = inputData, issuerWallet.address
+    newCurrency.publicKey = issuerWallet.publicKey
+    newCurrency.issuerSignature = issuerSignature
+
     if not newCurrency.verify():
         raise HTTPException(400, "invalid currency")
     
-    if not senderWallet.verify_signature(senderSignature,currencyId):
+    if not senderWallet.verifySignature(currencyId,senderSignature):
         raise HTTPException(400, "invalid 'senderSignature'")
     
     connection, cursor = DBConnection()
 
-    cursor.execute("INSERT `currency` (`currencyId`, `name`, `symbol`, `issuer`, `inputData`, `supply`) VALUES (%s, %s, %s, %s, %s, %s) "
+    cursor.execute("INSERT `currency` (`currencyId`, `name`, `symbol`, `inputData`, `issuer`, `supply`, `issuerSignature`, `publicKey`) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
                    "ON DUPLICATE KEY UPDATE supply = supply + VALUES(supply)",
-                   (newCurrency.currencyId, newCurrency.name, newCurrency.symbol, newCurrency.issuer, newCurrency.inputData, amount))
+                   (newCurrency.currencyId, newCurrency.name, newCurrency.symbol, newCurrency.inputData, newCurrency.issuer, amount,
+                    newCurrency.issuerSignature, newCurrency.publicKey))
 
     cursor.execute("SELECT `indexId`,`transactionId` FROM `transactions` ORDER BY indexId DESC LIMIT 1")
     TxDict = cursor.fetchall()[0]
