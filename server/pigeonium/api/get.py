@@ -84,8 +84,12 @@ class GET:
             raise e
         responseJson = response.json()
         if responseJson:
-            responseCu = Currency.create(responseJson["name"], responseJson["symbol"],
-                                         bytes.fromhex(responseJson["issuer"]), bytes.fromhex(responseJson["inputData"]), int(responseJson["supply"]))
+            responseCu = Currency()
+            responseCu.currencyId = responseJson['currencyId']
+            responseCu.name,responseCu.symbol = responseJson['name'],responseJson['symbol']
+            responseCu.issuer = bytes.fromhex(responseJson['issuer'])
+            responseCu.inputData,responseCu.issuerSignature = bytes.fromhex(responseJson['inputData']),bytes.fromhex(responseJson['issuerSignature'])
+            responseCu.publicKey = bytes.fromhex(responseJson['publicKey'])
             return responseCu
         else:
             return None
@@ -104,9 +108,13 @@ class GET:
         responseJson = response.json()
         currencyList:list[Currency] = []
         for responseCu in responseJson:
-            cu = Currency.create(responseCu["name"], responseCu["symbol"],bytes.fromhex(responseCu["issuer"]),
-                                 bytes.fromhex(responseCu["inputData"]), int(responseCu["supply"]))
-            currencyList.append(cu)
+            responseCu = Currency()
+            responseCu.currencyId = responseJson['currencyId']
+            responseCu.name,responseCu.symbol = responseJson['name'],responseJson['symbol']
+            responseCu.issuer = bytes.fromhex(responseJson['issuer'])
+            responseCu.inputData,responseCu.issuerSignature = bytes.fromhex(responseJson['inputData']),bytes.fromhex(responseJson['issuerSignature'])
+            responseCu.publicKey = bytes.fromhex(responseJson['publicKey'])
+            currencyList.append(responseCu)
         return currencyList
     
     @staticmethod

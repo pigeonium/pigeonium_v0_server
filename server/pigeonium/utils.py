@@ -66,3 +66,23 @@ class Utils:
         response = requests.post(url, data)
         response.raise_for_status()
         return response.json()
+
+    class inputData:
+        @staticmethod
+        def readFile(filePath: str) -> bytes:
+            with open(filePath, "rb") as f:
+                fileData = f.read()
+            filePthSplit = filePath.split(".")
+            if len(filePthSplit) == 1 or len(filePthSplit[-1]) >= 5:
+                fileType = "bin"
+            else:
+                fileType = filePthSplit[-1]
+            inputData = fileType.encode() + bytes(3) + fileData
+            return inputData
+        
+        @staticmethod
+        def writeFile(inputData: bytes, filePath: str = "./output"):
+            inputHex = inputData.hex()
+            fileType, fileData = inputHex.split("000000", 1)
+            with open(f"{filePath}.{bytes.fromhex(fileType).decode()}", "wb") as f:
+                f.write(bytes.fromhex(fileData))

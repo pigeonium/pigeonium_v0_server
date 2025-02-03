@@ -48,7 +48,7 @@ class Wallet:
         signature = private_key.sign(data)
         return signature
 
-    def verify_signature(self,signature:bytes,data:bytes):
+    def verifySignature(self,data:bytes,signature:bytes):
         public_key = VerifyingKey.from_string(self.publicKey,NIST256p,hashlib.sha256)
         try:
             if public_key.verify(signature,data):

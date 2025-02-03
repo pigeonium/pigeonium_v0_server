@@ -27,7 +27,8 @@ class POST:
     def issuance(currency: Currency, amount: int, issuerWallet: Wallet, senderWallet: Wallet):
         senderSign = senderWallet.sign(currency.currencyId)
         postData = {"currencyId":currency.currencyId.hex(), "name":currency.name, "symbol":currency.symbol, "inputData":currency.inputData.hex(),
-                    "amount":amount, "publicKey":issuerWallet.publicKey.hex(), "senderPublicKey":senderWallet.publicKey.hex(), "senderSignature":senderSign.hex()}
+                    "amount":amount, "issuerSignature":currency.issuerSignature.hex(), "publicKey":issuerWallet.publicKey.hex(),
+                    "senderPublicKey":senderWallet.publicKey.hex(), "senderSignature":senderSign.hex()}
         response = requests.post(Config.ServerUrl+"issuance",json=postData)
         try:
             response.raise_for_status()
