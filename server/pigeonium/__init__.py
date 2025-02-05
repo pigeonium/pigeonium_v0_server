@@ -16,3 +16,6 @@ __all__ = [
     "GET",
     "POST",
 ]
+
+__author__ = "h4ribote"
+__version__ = 0x00000010
