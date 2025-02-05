@@ -3,6 +3,7 @@ from pigeonium.config import Config
 from pigeonium.currency import Currency
 from pigeonium.transaction import Transaction
 from pigeonium.wallet import Wallet
+from typing import Literal
 
 class POST:
     @staticmethod
@@ -40,5 +41,32 @@ class POST:
         response = response.json()
 
         responseTx = Transaction.fromDict(response)
+
+        return responseTx
+    
+    @staticmethod
+    def swap(wallet: Wallet, buy_sell: Literal["buy","sell"], currencyId: bytes, inputAmount: int):
+        inputCurrency = bytes(16)
+        if buy_sell == "buy":
+            inputCurrency = bytes(16)
+        elif buy_sell == "sell":
+            inputCurrency = currencyId
+        else:
+            raise ValueError("Only 'buy' or 'sell' can be entered in 'buy_sell'")
+        
+        previousId = bytes.fromhex(requests.get(Config.ServerUrl).json()['previous'])
+        
+        swapTx = Transaction.create(wallet,Config.SwapPoolAddress,inputCurrency,inputAmount,previousId)
+        postData = {"transactionId":swapTx.transactionId.hex(), "amount":swapTx.amount, "publicKey":swapTx.publicKey.hex()}
+        response = requests.post(Config.ServerUrl+f"swap/{buy_sell}/{currencyId.hex()}",json=postData)
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as e:
+            print(response.text)
+            raise e
+        except Exception as e:
+            raise e
+        
+        responseTx = Transaction.fromDict(response.json())
 
         return responseTx

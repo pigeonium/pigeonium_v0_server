@@ -53,10 +53,11 @@ async def networkInfo():
         connection.commit()
         previousTxId = genesis.transactionId
     connection.close()
+    swapPoolWallet = pigeonium.Wallet.fromPrivate(Config.Network.SwapWalletPrivateKey)
     return dictFormat(
             {"NetworkName":Config.Network.NetworkName,
             "BaseCurrencyName":Config.Network.BaseCurrencyName,"BaseCurrencySymbol":Config.Network.BaseCurrencySymbol,"GenesisIssuance":Config.Network.BaseCurrencyIssuance,
-            "AdminPublicKey":adminWallet.publicKey,"LatestIndexId":latestIndexId,"previous":previousTxId})
+            "AdminPublicKey":adminWallet.publicKey,"LatestIndexId":latestIndexId,"previous":previousTxId,"SwapPoolAddress":swapPoolWallet.address.hex()})
 
 @router.get("/previousTx")
 async def getPreviousTxId():
@@ -285,6 +286,31 @@ async def getTransactions(indexIdFrom:int = None, currencyId:str = "", address:s
     connection.close()
     return txs
 
+@router.get("/swap/{currencyId}")
+async def getSwapInfo(currencyId:str):
+    try:
+        currencyId = bytes.fromhex(currencyId)
+    except ValueError:
+        raise HTTPException(400, "'currencyId' is invalid format")
+    except Exception as e:
+        raise e
+    
+    connection, cursor = DBConnection()
+
+    cursor.execute("SELECT reserve_BaseCurrency, reserve_PairCurrency, swap_fee FROM liquidity_pools WHERE pairCurrency = %s",(currencyId,))
+    results = list(cursor.fetchall())
+    cursor.close()
+    connection.close()
+
+    if not results:
+        raise HTTPException(400, "pool does not exist")
+
+    response = {"reserve_BaseCurrency":str(results[0]['reserve_BaseCurrency']),
+                "reserve_PairCurrency":str(results[0]['reserve_PairCurrency']),
+                "swap_fee":str(results[0]['swap_fee'])}
+
+    return response
+
 class transactionPost(BaseModel):
     transactionId:str
     dest:str
@@ -336,7 +362,6 @@ async def postTransaction(postData: transactionPost):
     
     cursor.execute("SELECT `amount` FROM `balance` WHERE `address` = %s AND `currencyId` = %s AND `amount` >= %s",(tx.source,tx.currencyId,tx.amount))
     if not cursor.fetchall():
-        print("wa")
         connection.close()
         raise HTTPException(400, "insufficient balance")
 
@@ -346,7 +371,7 @@ async def postTransaction(postData: transactionPost):
     cursor.execute("INSERT INTO `balance` (address, currencyId, amount) VALUES (%s, %s, %s) ON DUPLICATE KEY UPDATE amount = amount + VALUES(amount)",
                    (tx.dest,tx.currencyId,tx.amount))
     
-    if tx.dest == pigeonium.Utils.hex2bytes("00",16):
+    if tx.dest == bytes(16):
         cursor.execute("UPDATE `currency` SET `supply` = `supply` - %s WHERE `currencyId` = %s", (tx.amount,tx.currencyId))
 
     cursor.execute("INSERT INTO `transactions` (`indexId`,`transactionId`,`timestamp`,`source`,`dest`,`currencyId`,`amount`,`previous`,`publicKey`,`adminSignature`)"
@@ -375,8 +400,8 @@ class IssuancePost(BaseModel):
 async def postIssuanceTransaction(IssuanceData: IssuancePost):
     try:
         senderWallet = pigeonium.Wallet.fromPublic(bytes.fromhex(IssuanceData.senderPublicKey))
-        if not senderWallet.address in Config.Network.AllowedIssuanceSenderAddress:
-            raise HTTPException(403, "sender's address is not present in 'AllowedIssuanceSenderAddress'")
+        if not senderWallet.address in Config.Network.superiorAddress:
+            raise HTTPException(403, "sender's address is not present in 'superiorAddress'")
         senderSignature = bytes.fromhex(IssuanceData.senderSignature)
         issuerWallet = pigeonium.Wallet.fromPublic(bytes.fromhex(IssuanceData.publicKey))
         currencyId = bytes.fromhex(IssuanceData.currencyId)
@@ -442,3 +467,204 @@ async def postIssuanceTransaction(IssuanceData: IssuancePost):
 
     return dictFormat(tx.toDict())
 
+class swapTransactionPost(BaseModel):
+    transactionId:str
+    amount:int
+    publicKey:str
+
+@router.post("/swap/buy/{pairCurrencyId}")
+async def postSwapBuy(pairCurrencyId:str,postData:swapTransactionPost):
+    try:
+        swapPoolWallet = pigeonium.Wallet.fromPrivate(Config.Network.SwapWalletPrivateKey)
+        sourceWallet = pigeonium.Wallet.fromPublic(bytes.fromhex(postData.publicKey))
+        
+        pairCuId = bytes.fromhex(pairCurrencyId)
+        transactionId = bytes.fromhex(postData.transactionId)
+        source = sourceWallet.address
+        dest = swapPoolWallet.address
+        currencyId = bytes(16)
+        amount = postData.amount
+        publicKey = sourceWallet.publicKey
+
+        if amount > 0xffffffffffffffff or amount < 1:
+            raise HTTPException(400, "'amount' is out of range (1 - 256^8-1)")
+    except ValueError:
+        raise HTTPException(400, "params are invalid format")
+    except Exception as e:
+        raise e
+    
+    connection, cursor = DBConnection()
+    
+    cursor.execute("SELECT reserve_BaseCurrency FROM liquidity_pools WHERE pairCurrency = %s",(currencyId,))
+    results = list(cursor.fetchall())
+
+    if not results:
+        connection.close()
+        raise HTTPException(400, "pool does not exist")
+    
+    cursor.execute("SELECT `indexId`, `transactionId` FROM `transactions` ORDER BY indexId DESC LIMIT 1")
+    latest = cursor.fetchall()
+    latestIndexId = int(latest[0]['indexId'])
+    latestTxId = bytes(latest[0]['transactionId'])
+
+    tx = pigeonium.Transaction()
+    tx.transactionId = transactionId
+    tx.source = source
+    tx.dest = dest
+    tx.currencyId = currencyId
+    tx.amount = amount
+    tx.previous = latestTxId
+    tx.publicKey = publicKey
+
+    txCheck, _ = tx.verify()
+    if txCheck == False:
+        connection.close()
+        raise HTTPException(400, "invalid transaction")
+    cursor.execute("SELECT `amount` FROM `balance` WHERE `address` = %s AND `currencyId` = %s AND `amount` >= %s",(tx.source,tx.currencyId,tx.amount))
+    if not cursor.fetchall():
+        connection.close()
+        raise HTTPException(400, "insufficient balance")
+
+    tx.adminConfirm(latestIndexId + 1, int(time()), adminWallet)
+
+    cursor.execute("UPDATE `balance` SET `amount` = `amount` - %s WHERE `address` = %s AND `currencyId` = %s", (tx.amount,tx.source,tx.currencyId))
+    cursor.execute("INSERT INTO `balance` (address, currencyId, amount) VALUES (%s, %s, %s) ON DUPLICATE KEY UPDATE amount = amount + VALUES(amount)",
+                   (tx.dest,tx.currencyId,tx.amount))
+    
+    if tx.dest == bytes(16):
+        cursor.execute("UPDATE `currency` SET `supply` = `supply` - %s WHERE `currencyId` = %s", (tx.amount,tx.currencyId))
+
+    cursor.execute("INSERT INTO `transactions` (`indexId`,`transactionId`,`timestamp`,`source`,`dest`,`currencyId`,`amount`,`previous`,`publicKey`,`adminSignature`)"
+                   " VALUES (%(indexId)s,%(transactionId)s,%(timestamp)s,%(source)s,%(dest)s,%(currencyId)s,%(amount)s,%(previous)s,%(publicKey)s,%(adminSignature)s)",
+                   tx.toDict())
+    
+    cursor.execute("SET @output_amount = 0;")
+    cursor.execute("CALL swap_currency(%s, %s, %s, @output_amount)",('buy', pairCuId, tx.amount))
+    cursor.execute("SELECT @output_amount;")
+
+    output_amount = int(cursor.fetchall()[0]['@output_amount'])
+    
+    swapTx = pigeonium.Transaction.create(swapPoolWallet, source, pairCuId, output_amount, tx.transactionId)
+    swapTx.adminConfirm(tx.indexId + 1, int(time()), adminWallet)
+    
+    cursor.execute("SELECT `amount` FROM `balance` WHERE `address` = %s AND `currencyId` = %s AND `amount` >= %s",(swapTx.source,swapTx.currencyId,swapTx.amount))
+    if not cursor.fetchall():
+        connection.close()
+        raise HTTPException(400, "insufficient pool balance")
+
+    cursor.execute("UPDATE `balance` SET `amount` = `amount` - %s WHERE `address` = %s AND `currencyId` = %s", (swapTx.amount,swapTx.source,swapTx.currencyId))
+    cursor.execute("INSERT INTO `balance` (address, currencyId, amount) VALUES (%s, %s, %s) ON DUPLICATE KEY UPDATE amount = amount + VALUES(amount)",
+                   (swapTx.dest,swapTx.currencyId,swapTx.amount))
+    
+    if swapTx.dest == bytes(16):
+        cursor.execute("UPDATE `currency` SET `supply` = `supply` - %s WHERE `currencyId` = %s", (swapTx.amount,swapTx.currencyId))
+
+    cursor.execute("INSERT INTO `transactions` (`indexId`,`transactionId`,`timestamp`,`source`,`dest`,`currencyId`,`amount`,`previous`,`publicKey`,`adminSignature`)"
+                   " VALUES (%(indexId)s,%(transactionId)s,%(timestamp)s,%(source)s,%(dest)s,%(currencyId)s,%(amount)s,%(previous)s,%(publicKey)s,%(adminSignature)s)",
+                   swapTx.toDict())
+    
+    cursor.execute("DELETE FROM `balance` WHERE amount = 0")
+    
+    connection.commit()
+    connection.close()
+
+    return dictFormat(swapTx.toDict())
+
+@router.post("/swap/sell/{pairCurrencyId}")
+async def postSwapSell(pairCurrencyId:str,postData:swapTransactionPost):
+    try:
+        swapPoolWallet = pigeonium.Wallet.fromPrivate(Config.Network.SwapWalletPrivateKey)
+        sourceWallet = pigeonium.Wallet.fromPublic(bytes.fromhex(postData.publicKey))
+        
+        pairCuId = bytes.fromhex(pairCurrencyId)
+        transactionId = bytes.fromhex(postData.transactionId)
+        source = sourceWallet.address
+        dest = swapPoolWallet.address
+        currencyId = pairCuId
+        amount = postData.amount
+        publicKey = sourceWallet.publicKey
+
+        if amount > 0xffffffffffffffff or amount < 1:
+            raise HTTPException(400, "'amount' is out of range (1 - 256^8-1)")
+    except ValueError:
+        raise HTTPException(400, "params are invalid format")
+    except Exception as e:
+        raise e
+    
+    connection, cursor = DBConnection()
+    
+    cursor.execute("SELECT reserve_BaseCurrency FROM liquidity_pools WHERE pairCurrency = %s",(currencyId,))
+    results = list(cursor.fetchall())
+
+    if not results:
+        connection.close()
+        raise HTTPException(400, "pool does not exist")
+    
+    cursor.execute("SELECT `indexId`, `transactionId` FROM `transactions` ORDER BY indexId DESC LIMIT 1")
+    latest = cursor.fetchall()
+    latestIndexId = int(latest[0]['indexId'])
+    latestTxId = bytes(latest[0]['transactionId'])
+
+    tx = pigeonium.Transaction()
+    tx.transactionId = transactionId
+    tx.source = source
+    tx.dest = dest
+    tx.currencyId = currencyId
+    tx.amount = amount
+    tx.previous = latestTxId
+    tx.publicKey = publicKey
+
+    txCheck, _ = tx.verify()
+    if txCheck == False:
+        connection.close()
+        raise HTTPException(400, "invalid transaction")
+    
+    cursor.execute("SELECT `amount` FROM `balance` WHERE `address` = %s AND `currencyId` = %s AND `amount` >= %s",(tx.source,tx.currencyId,tx.amount))
+    if not cursor.fetchall():
+        connection.close()
+        raise HTTPException(400, "insufficient balance")
+
+    tx.adminConfirm(latestIndexId + 1, int(time()), adminWallet)
+
+    cursor.execute("UPDATE `balance` SET `amount` = `amount` - %s WHERE `address` = %s AND `currencyId` = %s", (tx.amount,tx.source,tx.currencyId))
+    cursor.execute("INSERT INTO `balance` (address, currencyId, amount) VALUES (%s, %s, %s) ON DUPLICATE KEY UPDATE amount = amount + VALUES(amount)",
+                   (tx.dest,tx.currencyId,tx.amount))
+    
+    if tx.dest == bytes(16):
+        cursor.execute("UPDATE `currency` SET `supply` = `supply` - %s WHERE `currencyId` = %s", (tx.amount,tx.currencyId))
+
+    cursor.execute("INSERT INTO `transactions` (`indexId`,`transactionId`,`timestamp`,`source`,`dest`,`currencyId`,`amount`,`previous`,`publicKey`,`adminSignature`)"
+                   " VALUES (%(indexId)s,%(transactionId)s,%(timestamp)s,%(source)s,%(dest)s,%(currencyId)s,%(amount)s,%(previous)s,%(publicKey)s,%(adminSignature)s)",
+                   tx.toDict())
+    
+    cursor.execute("SET @output_amount = 0;")
+    cursor.execute("CALL swap_currency(%s, %s, %s, @output_amount)",('sell', pairCuId, tx.amount))
+    cursor.execute("SELECT @output_amount;")
+
+    output_amount = int(cursor.fetchall()[0]['@output_amount'])
+    
+    swapTx = pigeonium.Transaction.create(swapPoolWallet, source, bytes(16), output_amount, tx.transactionId)
+    swapTx.adminConfirm(tx.indexId + 1, int(time()), adminWallet)
+    
+    cursor.execute("SELECT `amount` FROM `balance` WHERE `address` = %s AND `currencyId` = %s AND `amount` >= %s",(swapTx.source,swapTx.currencyId,swapTx.amount))
+    if not cursor.fetchall():
+        connection.close()
+        raise HTTPException(400, "insufficient pool balance")
+
+    cursor.execute("UPDATE `balance` SET `amount` = `amount` - %s WHERE `address` = %s AND `currencyId` = %s", (swapTx.amount,swapTx.source,swapTx.currencyId))
+    cursor.execute("INSERT INTO `balance` (address, currencyId, amount) VALUES (%s, %s, %s) ON DUPLICATE KEY UPDATE amount = amount + VALUES(amount)",
+                   (swapTx.dest,swapTx.currencyId,swapTx.amount))
+    
+    if swapTx.dest == bytes(16):
+        cursor.execute("UPDATE `currency` SET `supply` = `supply` - %s WHERE `currencyId` = %s", (swapTx.amount,swapTx.currencyId))
+
+    cursor.execute("INSERT INTO `transactions` (`indexId`,`transactionId`,`timestamp`,`source`,`dest`,`currencyId`,`amount`,`previous`,`publicKey`,`adminSignature`)"
+                   " VALUES (%(indexId)s,%(transactionId)s,%(timestamp)s,%(source)s,%(dest)s,%(currencyId)s,%(amount)s,%(previous)s,%(publicKey)s,%(adminSignature)s)",
+                   swapTx.toDict())
+    
+    cursor.execute("DELETE FROM `balance` WHERE amount = 0")
+    
+    connection.commit()
+    connection.close()
+
+    return dictFormat(swapTx.toDict())

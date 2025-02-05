@@ -8,6 +8,7 @@ class NetworkInfo(TypedDict):
     AdminPublicKey: bytes
     LatestIndexId: int
     previousTxId: bytes
+    SwapPoolAddress: bytes
 
 class BalanceDict(TypedDict):
     address: bytes

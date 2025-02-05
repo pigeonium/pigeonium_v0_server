@@ -3,6 +3,7 @@ from pigeonium.config import Config
 from pigeonium.currency import Currency
 from pigeonium.transaction import Transaction
 from . import responseType
+from typing import Literal
 
 class GET:
     @staticmethod
@@ -18,7 +19,8 @@ class GET:
         response = response.json()
         infoDict:responseType.NetworkInfo = {"NetworkName":response["NetworkName"],
         "BaseCurrencyName":response["BaseCurrencyName"],"BaseCurrencySymbol":response["BaseCurrencySymbol"],"GenesisIssuance":int(response["GenesisIssuance"]),
-        "AdminPublicKey":bytes.fromhex(response["AdminPublicKey"]),"LatestIndexId":int(response["LatestIndexId"]),"previous":bytes.fromhex(response["previous"])}
+        "AdminPublicKey":bytes.fromhex(response["AdminPublicKey"]),"LatestIndexId":int(response["LatestIndexId"]),"previous":bytes.fromhex(response["previous"]),
+        "SwapPoolAddress":bytes.fromhex(response["SwapPoolAddress"])}
         return infoDict
 
     @staticmethod
@@ -199,3 +201,53 @@ class GET:
             raise e
         previousId = bytes.fromhex(response.json()["previous"])
         return previousId
+
+    @staticmethod
+    def swapEstimatedOutput(buy_sell: Literal["buy","sell"], currencyId: bytes, inputAmount: int):
+        if not (buy_sell == "buy" or buy_sell == "sell"):
+            raise ValueError("Only 'buy' or 'sell' can be entered in 'buy_sell'")
+        
+        response = requests.get(Config.ServerUrl+f"swap/{currencyId.hex()}")
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as e:
+            print(response.text)
+            raise e
+        except Exception as e:
+            raise e
+        
+        if buy_sell == "buy":
+            reserve_InputCurrency, reserve_OutputCurrency = int(response.json()['reserve_BaseCurrency']), int(response.json()['reserve_PairCurrency'])
+        else:
+            reserve_OutputCurrency, reserve_InputCurrency = int(response.json()['reserve_BaseCurrency']), int(response.json()['reserve_PairCurrency'])
+        
+        swap_fee = int(response.json()['swap_fee'])
+
+        fee_multiplier = 1000 - swap_fee
+        effective_input = (inputAmount * fee_multiplier) // 1000
+        denominator = reserve_InputCurrency + effective_input
+
+        if denominator == 0:
+            estimated_output_amount = 0
+        else:
+            estimated_output_amount = (reserve_OutputCurrency * effective_input) // denominator
+
+        return estimated_output_amount
+
+    @staticmethod
+    def swapInfo(currencyId: bytes):
+        response = requests.get(Config.ServerUrl+f"swap/{currencyId.hex()}")
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as e:
+            print(response.text)
+            raise e
+        except Exception as e:
+            raise e
+        
+        responseDict = {
+            'reserve_BaseCurrency': int(response.json()['reserve_BaseCurrency']),
+            'reserve_PairCurrency': int(response.json()['reserve_PairCurrency']),
+            'swap_fee': int(response.json()['swap_fee'])}
+
+        return responseDict
