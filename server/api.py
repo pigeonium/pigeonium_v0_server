@@ -55,9 +55,9 @@ async def networkInfo():
     connection.close()
     swapPoolWallet = pigeonium.Wallet.fromPrivate(Config.Network.SwapWalletPrivateKey)
     return dictFormat(
-            {"NetworkName":Config.Network.NetworkName,
+            {"NetworkName":Config.Network.NetworkName,"PigeoniumVersion":pigeonium.__version__,
             "BaseCurrencyName":Config.Network.BaseCurrencyName,"BaseCurrencySymbol":Config.Network.BaseCurrencySymbol,"GenesisIssuance":Config.Network.BaseCurrencyIssuance,
-            "AdminPublicKey":adminWallet.publicKey,"LatestIndexId":latestIndexId,"previous":previousTxId,"SwapPoolAddress":swapPoolWallet.address.hex()})
+            "AdminPublicKey":adminWallet.publicKey,"LatestIndexId":latestIndexId,"previous":previousTxId,"SwapPoolAddress":swapPoolWallet.address})
 
 @router.get("/previousTx")
 async def getPreviousTxId():

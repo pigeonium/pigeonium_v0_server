@@ -1,8 +1,4 @@
-def hex2bytes(hex: str, length:int = None) -> bytes:
-    b = bytes.fromhex(hex)
-    if length and len(b) < length:
-        b = bytes(length - len(b)) + b
-    return b
+from hashlib import sha256
 
 class Node:
     port:int = 14513
@@ -11,14 +7,14 @@ class Node:
     webhookURLs:list[str] = []
 
 class Network:
-    AdminPrivateKey:bytes = hex2bytes("114514",length=32)
+    AdminPrivateKey:bytes = sha256(b"114514").digest()
     NetworkName:str = "Pigeonium_v0"
     BaseCurrencyName:str = "Pigeon"
     BaseCurrencySymbol:str = "pigeon"
     BaseCurrencyIssuance:int = 1000
-    superiorAddress:list[bytes] = [hex2bytes("456738b895b3e30397eb3b394dca545f",16)]
-    SwapWalletPrivateKey:bytes = hex2bytes("swap".encode().hex(),length=32)
-
+    superiorAddress:list[bytes] = [bytes.fromhex("77b1f31c8c067ab01adc53e8a1723a66")]
+    SwapWalletPrivateKey:bytes = sha256(b"swap").digest()
+ 
 class MySQL:
     host:str = "localhost"
     port:int = 3306
