@@ -18,4 +18,4 @@ __all__ = [
 ]
 
 __author__ = "h4ribote"
-__version__ = 0x00000010
+__version__ = 0x00000013
