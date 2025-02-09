@@ -1,6 +1,7 @@
 from hashlib import sha256
 
-class Node:
+class Server:
+    rootPath:str = ""
     port:int = 14513
     txResponseLimit:int = 200
     currenciesResponseLimit:int = 300

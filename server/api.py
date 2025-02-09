@@ -169,7 +169,7 @@ async def getCurrencies(sortBy:str = "id", sortOrder:str = "ASC"):
     
     connection, cursor = DBConnection()
     sql += " LIMIT %s"
-    cursor.execute(sql,(Config.Node.currenciesResponseLimit,))
+    cursor.execute(sql,(Config.Server.currenciesResponseLimit,))
     results = list(cursor.fetchall())
     response = []
 
@@ -275,7 +275,7 @@ async def getTransactions(indexIdFrom:int = None, currencyId:str = "", address:s
         args.append(volume)
     
     sql += " LIMIT %s"
-    args.append(Config.Node.txResponseLimit)
+    args.append(Config.Server.txResponseLimit)
     cursor.execute(sql,tuple(args))
     result = list(cursor.fetchall())
     txs = []
