@@ -34,11 +34,9 @@ class Utils:
     @staticmethod
     def convertAmount(amount):
         if isinstance(amount, int):
-            dec = Decimal(amount) / 1000000
-            return str(dec)
+            return str(f"{amount / 1000000:,.6f}".rstrip('0').rstrip('.'))
         elif isinstance(amount, float):
-            dec = Decimal(str(amount)) * 1000000
-            return int(dec)
+            return int(Decimal(str(amount)) * 1000000)
         else:
             raise ValueError()
     

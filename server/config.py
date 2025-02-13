@@ -8,6 +8,7 @@ class Server:
     webhookURLs:list[str] = []
 
 class Network:
+    NetworkId:int = 0
     AdminPrivateKey:bytes = sha256(b"114514").digest()
     NetworkName:str = "Pigeonium_v0"
     BaseCurrencyName:str = "Pigeon"

@@ -14,3 +14,9 @@ class BalanceDict(TypedDict):
     address: bytes
     currencyId: bytes
     amount: int
+
+class SwapPoolInfo(TypedDict):
+    reserveBaseCurrency: int
+    reservePairCurrency: int
+    swapFee: int
+    history: list[str,str|int]

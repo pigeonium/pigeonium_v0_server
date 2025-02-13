@@ -4,7 +4,8 @@ class Config:
     AdminPublicKey: bytes = bytes(32)
     SwapPoolAddress: bytes = bytes(16)
     ServerUrl: str = "http://localhost:14513/"
-    maxInputData: int = 2**24-1
+    MaxInputData: int = 2**24-1
+    NetworkId: int = 0
 
     @staticmethod
     def getFromServer(ServerUrl:str):

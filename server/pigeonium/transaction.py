@@ -13,7 +13,7 @@ class Transaction:
         self.dest:bytes = None
         self.currencyId:bytes = None
         self.amount:int = None
-        self.previous:bytes = None
+        self.networkId:int = None
         self.publicKey:bytes = None
         self.adminSignature:bytes = None
     
@@ -27,26 +27,26 @@ class Transaction:
         return self.__str__()
 
     @classmethod
-    def create(cls,wallet:Wallet,dest:bytes,currencyId:bytes,amount:int,previous:bytes):
+    def create(cls,wallet:Wallet,dest:bytes,currencyId:bytes,amount:int):
         tx = cls()
-        tx.transactionId = wallet.sign(dest + currencyId + amount.to_bytes(8, 'big') + previous)
+        tx.transactionId = wallet.sign(dest + currencyId + amount.to_bytes(8, 'big') + Config.NetworkId.to_bytes(8, 'big'))
         tx.source = wallet.address
         tx.dest = dest
         tx.currencyId = currencyId
         tx.amount = amount
-        tx.previous = previous
+        tx.networkId = Config.NetworkId
         tx.publicKey = wallet.publicKey
         return tx
     
     def verify(self):
-        if not (self.source == Utils.md5(Utils.sha256(self.publicKey))) and not (self.publicKey == Config.AdminPublicKey) and not (self.source == bytes(16)):
+        if (not (self.source == Utils.md5(Utils.sha256(self.publicKey))) and not (self.source == bytes(16))):
             return False, False
         try:
             if self.source == bytes(16):
                 public_key = VerifyingKey.from_string(Config.AdminPublicKey,NIST256p,hashlib.sha256)
             else:
                 public_key = VerifyingKey.from_string(self.publicKey,NIST256p,hashlib.sha256)
-            data = (self.dest + self.currencyId + self.amount.to_bytes(8, 'big') + self.previous)
+            data = (self.dest + self.currencyId + self.amount.to_bytes(8, 'big') + self.networkId.to_bytes(8, 'big'))
 
             if public_key.verify(self.transactionId,data):
                 sourceSign = True
@@ -56,7 +56,7 @@ class Transaction:
             sourceSign = False
         try:
             public_key = VerifyingKey.from_string(Config.AdminPublicKey,NIST256p,hashlib.sha256)
-            if public_key.verify(self.adminSignature,(self.indexId.to_bytes(8, 'big') + self.transactionId + self.timestamp.to_bytes(8, 'big') + self.previous)):
+            if public_key.verify(self.adminSignature,(self.indexId.to_bytes(8, 'big') + self.transactionId + self.timestamp.to_bytes(8, 'big') + self.networkId.to_bytes(8, 'big'))):
                 adminSign = True
             else:
                 adminSign = False
@@ -65,7 +65,7 @@ class Transaction:
         return sourceSign, adminSign
     
     def adminConfirm(self, indexId:int, txTimestamp:int, adminWallet:Wallet):
-        signature = adminWallet.sign(indexId.to_bytes(8, 'big') + self.transactionId + txTimestamp.to_bytes(8, 'big') + self.previous)
+        signature = adminWallet.sign(indexId.to_bytes(8, 'big') + self.transactionId + txTimestamp.to_bytes(8, 'big') + self.networkId.to_bytes(8, 'big'))
         self.indexId = indexId
         self.timestamp = txTimestamp
         self.adminSignature = signature
@@ -79,7 +79,7 @@ class Transaction:
         txDict['dest'] = self.dest
         txDict['currencyId'] = self.currencyId
         txDict['amount'] = self.amount
-        txDict['previous'] = self.previous
+        txDict['networkId'] = self.networkId
         txDict['publicKey'] = self.publicKey
         txDict['adminSignature'] = self.adminSignature
         return txDict
@@ -94,7 +94,7 @@ class Transaction:
         tx.dest = transaction.get('dest', None)
         tx.currencyId = transaction.get('currencyId', None)
         tx.amount = transaction.get('amount', None)
-        tx.previous = transaction.get('previous', None)
+        tx.networkId = transaction.get('networkId', None)
         tx.publicKey = transaction.get('publicKey', None)
         tx.adminSignature = transaction.get('adminSignature', None)
         return tx

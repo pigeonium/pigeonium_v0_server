@@ -19,7 +19,7 @@ class GET:
         response = response.json()
         infoDict:responseType.NetworkInfo = {"NetworkName":response["NetworkName"],
         "BaseCurrencyName":response["BaseCurrencyName"],"BaseCurrencySymbol":response["BaseCurrencySymbol"],"GenesisIssuance":int(response["GenesisIssuance"]),
-        "AdminPublicKey":bytes.fromhex(response["AdminPublicKey"]),"LatestIndexId":int(response["LatestIndexId"]),"previous":bytes.fromhex(response["previous"]),
+        "AdminPublicKey":bytes.fromhex(response["AdminPublicKey"]),"LatestIndexId":int(response["LatestIndexId"]),"networkId":int(response["networkId"]),
         "SwapPoolAddress":bytes.fromhex(response["SwapPoolAddress"])}
         return infoDict
 
@@ -97,7 +97,7 @@ class GET:
             return None
 
     @staticmethod
-    def currencies(sortBy: str = "id", sortOrder: str = "ASC") -> list[Currency]:
+    def currencies(sortBy: str = "id", sortOrder: Literal["ASC","DESC"] = "ASC") -> list[Currency]:
         params = {"sortBy": sortBy, "sortOrder": sortOrder}
         response = requests.get(Config.ServerUrl+"currencies",params)
         try:
@@ -144,6 +144,7 @@ class GET:
             tx.dest = bytes.fromhex(resTx["dest"])
             tx.currencyId = bytes.fromhex(resTx["currencyId"])
             tx.amount = int(resTx["amount"])
+            tx.networkId = int(resTx["networkId"])
             tx.publicKey = bytes.fromhex(resTx["publicKey"])
             tx.adminSignature = bytes.fromhex(resTx["adminSignature"])
             return tx
@@ -184,29 +185,16 @@ class GET:
             tx.dest = bytes.fromhex(resTx["dest"])
             tx.currencyId = bytes.fromhex(resTx["currencyId"])
             tx.amount = int(resTx["amount"])
-            tx.previous = bytes.fromhex(resTx["previous"])
+            tx.networkId = int(resTx["networkId"])
             tx.publicKey = bytes.fromhex(resTx["publicKey"])
             tx.adminSignature = bytes.fromhex(resTx["adminSignature"])
             responses.append(tx)
         return responses
 
     @staticmethod
-    def previousTxId():
-        response = requests.get(Config.ServerUrl)
-        try:
-            response.raise_for_status()
-        except requests.HTTPError as e:
-            print(response.text)
-            raise e
-        except Exception as e:
-            raise e
-        previousId = bytes.fromhex(response.json()["previous"])
-        return previousId
-
-    @staticmethod
-    def swapEstimatedOutput(buy_sell: Literal["buy","sell"], currencyId: bytes, inputAmount: int):
-        if not (buy_sell == "buy" or buy_sell == "sell"):
-            raise ValueError("Only 'buy' or 'sell' can be entered in 'buy_sell'")
+    def swapEstimatedOutput(swapType: Literal["buy","sell"], currencyId: bytes, inputAmount: int):
+        if not (swapType == "buy" or swapType == "sell"):
+            raise ValueError("Only 'buy' or 'sell' can be entered in 'swapType'")
         
         response = requests.get(Config.ServerUrl+f"swap/{currencyId.hex()}")
         try:
@@ -217,14 +205,14 @@ class GET:
         except Exception as e:
             raise e
         
-        if buy_sell == "buy":
-            reserve_InputCurrency, reserve_OutputCurrency = int(response.json()['reserve_BaseCurrency']), int(response.json()['reserve_PairCurrency'])
+        if swapType == "buy":
+            reserve_InputCurrency, reserve_OutputCurrency = int(response.json()['reserveBaseCurrency']), int(response.json()['reservePairCurrency'])
         else:
-            reserve_OutputCurrency, reserve_InputCurrency = int(response.json()['reserve_BaseCurrency']), int(response.json()['reserve_PairCurrency'])
+            reserve_OutputCurrency, reserve_InputCurrency = int(response.json()['reserveBaseCurrency']), int(response.json()['reservePairCurrency'])
         
-        swap_fee = int(response.json()['swap_fee'])
+        swapFee = int(response.json()['swapFee'])
 
-        fee_multiplier = 1000 - swap_fee
+        fee_multiplier = 1000 - swapFee
         effective_input = (inputAmount * fee_multiplier) // 1000
         denominator = reserve_InputCurrency + effective_input
 
@@ -245,10 +233,40 @@ class GET:
             raise e
         except Exception as e:
             raise e
+        responseJson = response.json()
+        swapHistoryJson = responseJson['history']
+        swapHistory = []
+        for history in swapHistoryJson:
+            swapHistory.append(
+                {'swapType': str(history['swapType']),
+                 'inputAmount': int(history['inputAmount']),
+                 'outputAmount': int(history['outputAmount']),
+                 'timestamp': int(history['timestamp'])}
+            )
+        responseDict:responseType.SwapPoolInfo = {
+            'reserveBaseCurrency': int(responseJson['reserveBaseCurrency']),
+            'reservePairCurrency': int(responseJson['reservePairCurrency']),
+            'swapFee': int(responseJson['swapFee']),
+            'history': swapHistory}
+
+        return responseDict
+
+    @staticmethod
+    def swaps():
+        response = requests.get(Config.ServerUrl+f"swaps")
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as e:
+            print(response.text)
+            raise e
+        except Exception as e:
+            raise e
         
-        responseDict = {
-            'reserve_BaseCurrency': int(response.json()['reserve_BaseCurrency']),
-            'reserve_PairCurrency': int(response.json()['reserve_PairCurrency']),
-            'swap_fee': int(response.json()['swap_fee'])}
+        responseDict:dict[bytes,responseType.SwapPoolInfo] = {}
+        for poolCuId in response.json().keys():
+            responseDict[bytes.fromhex(poolCuId)] = {
+            'reserveBaseCurrency': int(response.json()['reserveBaseCurrency']),
+            'reservePairCurrency': int(response.json()['reservePairCurrency']),
+            'swapFee': int(response.json()['swapFee'])}
 
         return responseDict

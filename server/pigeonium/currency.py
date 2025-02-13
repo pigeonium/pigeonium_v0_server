@@ -29,7 +29,10 @@ class Currency:
         cu.inputData = inputData
         cu.issuer = issuerWallet.address
         cu.supply = supply
-        cu.issuerSignature = issuerWallet.sign(cu.currencyId)
+        try:
+            cu.issuerSignature = issuerWallet.sign(cu.currencyId)
+        except:
+            cu.issuerSignature = None
         return cu
     
     def verify(self):

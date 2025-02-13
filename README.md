@@ -1,6 +1,6 @@
 # pigeonium_v0_server
 pigeonium_v0のサーバー動かすやつ  
-config.pyを適切に設定して実行(AdminPrivateKeyをデフォルト設定で放置しないこと)
+config.pyを適切に設定して実行(AdminPrivateKey,superiorAddress,SwapWalletPrivateKeyをデフォルト設定で放置しないこと)
 
 ## Apacheを用いて公開する
 ドメインとかの都合で色々やりたい人向け

@@ -5,11 +5,13 @@ import pigeonium
 from time import time
 import re
 from pydantic import BaseModel
+import responseTypes
 
 router = APIRouter()
 
 adminWallet = pigeonium.Wallet.fromPrivate(Config.Network.AdminPrivateKey)
 pigeonium.Config.AdminPublicKey = adminWallet.publicKey
+pigeonium.Config.NetworkId = Config.Network.NetworkId
 
 def DBConnection():
     cond = Config.MySQL
@@ -24,43 +26,39 @@ def dictFormat(data: dict):
         dValue = data[dKey]
         if type(dValue) == bytes:
             data[dKey] = dValue.hex()
-        elif type(dValue) == int:
-            data[dKey] = str(dValue)
     return data
 
 def strPattern(s:str, pattern:str = r'^[0-9a-zA-Z_]+$'):
     return bool(re.match(pattern, s))
 
 @router.get("/")
-async def networkInfo():
+async def networkInfo() -> responseTypes.NetworkInfo:
     connection, cursor = DBConnection()
-    cursor.execute("SELECT `transactionId`,`indexId` FROM `transactions` ORDER BY indexId DESC LIMIT 1")
+    cursor.execute("SELECT `indexId` FROM `transactions` ORDER BY indexId DESC LIMIT 1")
     latest = cursor.fetchall()
     if latest:
         latestIndexId = latest[0]['indexId']
-        previousTxId = latest[0]['transactionId']
     else:
         latestIndexId = 0
         genesis = pigeonium.AdminUtil.genesis(Config.Network.BaseCurrencyIssuance,adminWallet)
         genesis.adminConfirm(0, int(time()), adminWallet)
-        cursor.execute("INSERT INTO `transactions` (`indexId`,`transactionId`,`timestamp`,`source`,`dest`,`currencyId`,`amount`,`previous`,`publicKey`,`adminSignature`)"
-                       " VALUES (%(indexId)s,%(transactionId)s,%(timestamp)s,%(source)s,%(dest)s,%(currencyId)s,%(amount)s,%(previous)s,%(publicKey)s,%(adminSignature)s)",
+        cursor.execute("INSERT INTO `transactions` (`indexId`,`transactionId`,`timestamp`,`source`,`dest`,`currencyId`,`amount`,`networkId`,`publicKey`,`adminSignature`)"
+                       " VALUES (%(indexId)s,%(transactionId)s,%(timestamp)s,%(source)s,%(dest)s,%(currencyId)s,%(amount)s,%(networkId)s,%(publicKey)s,%(adminSignature)s)",
                        genesis.toDict())
         cursor.execute("INSERT INTO `balance` (`address`, `currencyId`, `amount`) VALUES (%s, %s, %s)",(adminWallet.address, genesis.currencyId, genesis.amount))
         cursor.execute("INSERT INTO `currency` (`currencyId`, `name`, `symbol`, `issuer`, `inputData`, `supply`,`issuerSignature`,`publicKey`) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
                        (genesis.currencyId,Config.Network.BaseCurrencyName,Config.Network.BaseCurrencySymbol,genesis.dest,bytes(),genesis.amount,
                         adminWallet.sign(genesis.currencyId),adminWallet.publicKey))
         connection.commit()
-        previousTxId = genesis.transactionId
     connection.close()
     swapPoolWallet = pigeonium.Wallet.fromPrivate(Config.Network.SwapWalletPrivateKey)
     return dictFormat(
             {"NetworkName":Config.Network.NetworkName,"PigeoniumVersion":pigeonium.__version__,
             "BaseCurrencyName":Config.Network.BaseCurrencyName,"BaseCurrencySymbol":Config.Network.BaseCurrencySymbol,"GenesisIssuance":Config.Network.BaseCurrencyIssuance,
-            "AdminPublicKey":adminWallet.publicKey,"LatestIndexId":latestIndexId,"previous":previousTxId,"SwapPoolAddress":swapPoolWallet.address})
+            "AdminPublicKey":adminWallet.publicKey,"LatestIndexId":latestIndexId,"networkId":Config.Network.NetworkId,"SwapPoolAddress":swapPoolWallet.address})
 
 @router.get("/previousTx")
-async def getPreviousTxId():
+async def getPreviousTx():
     connection, cursor = DBConnection()
     cursor.execute("SELECT * FROM `transactions` ORDER BY indexId DESC LIMIT 1")
     TxDict = cursor.fetchone()
@@ -72,14 +70,14 @@ async def getPreviousTxId():
     tx.dest = TxDict['dest']
     tx.currencyId = TxDict['currencyId']
     tx.amount = TxDict['amount']
-    tx.previous = TxDict['previous']
+    tx.networkId = TxDict['networkId']
     tx.publicKey = TxDict['publicKey']
     tx.adminSignature = TxDict['adminSignature']
     connection.close()
     return dictFormat(tx.toDict())
 
 @router.get("/balance")
-async def getBalance(address: str = "", currencyId: str = ""):
+async def getBalance(address: str = "", currencyId: str = "") -> list[responseTypes.Balance]:
     try:
         address = bytes.fromhex(address)
         currencyId = bytes.fromhex(currencyId)
@@ -104,7 +102,7 @@ async def getBalance(address: str = "", currencyId: str = ""):
     result = list(cursor.fetchall())
     response = []
     for bal in result:
-        response.append({"address": bal['address'].hex(), "currencyId": bal['currencyId'].hex(), "amount": str(bal['amount'])})
+        response.append({"address": bal['address'].hex(), "currencyId": bal['currencyId'].hex(), "amount": bal['amount']})
     connection.close()
     return response
 
@@ -147,7 +145,7 @@ async def getCurrency(currencyId: str = None, name: str = None, symbol: str = No
         response = {"currencyId": result['currencyId'].hex(), "name": result['name'], "symbol": result['symbol'],
                     "issuer": result['issuer'].hex(), "inputData": result['inputData'].hex(),
                     "issuerSignature": result['issuerSignature'].hex(), "publicKey": result['publicKey'].hex(),
-                    "supply": str(result['supply'])}
+                    "supply": result['supply']}
     else:
         response = {}
     connection.close()
@@ -177,18 +175,20 @@ async def getCurrencies(sortBy:str = "id", sortOrder:str = "ASC"):
         response.append({"currencyId": cu['currencyId'].hex(), "name": cu['name'], "symbol": cu['symbol'],
                          "issuer": cu['issuer'].hex(), "inputData": cu['inputData'].hex(),
                          "issuerSignature": cu['issuerSignature'].hex(), "publicKey": cu['publicKey'].hex(),
-                         "supply": str(cu['supply'])})
+                         "supply": cu['supply']})
     connection.close()
     return response
 
 @router.get("/transaction")
-async def getTransaction(transactionId: str = None, indexId: int = None):
+async def getTransaction(transactionId: str = None, indexId: int = None) -> responseTypes.Transaction:
     try:
         if transactionId:
             transactionId = bytes.fromhex(transactionId)
-            args = ("transactionId",transactionId)
-        elif indexId:
-            args = ("indexId",indexId)
+            colm = "transactionId"
+            args = (transactionId,)
+        elif type(indexId) == int:
+            colm = "indexId"
+            args = (indexId,)
         else:
             raise HTTPException(400, "'transactionId' or 'indexId' is required")
     except ValueError:
@@ -198,7 +198,7 @@ async def getTransaction(transactionId: str = None, indexId: int = None):
     
     connection, cursor = DBConnection()
 
-    cursor.execute("SELECT * FROM `transactions` WHERE %s = %s",args)
+    cursor.execute(f"SELECT * FROM `transactions` WHERE `{colm}` = %s",args)
     result = list(cursor.fetchall())
     if result:
         response = dictFormat(result[0])
@@ -208,7 +208,7 @@ async def getTransaction(transactionId: str = None, indexId: int = None):
     return response
 
 @router.get("/transactions")
-async def getTransactions(indexIdFrom:int = None, currencyId:str = "", address:str = "", source:str = "", dest:str = "", volume:int = 0):
+async def getTransactions(indexIdFrom:int = None, currencyId:str = "", address:str = "", source:str = "", dest:str = "", volume:int = 0) -> list[responseTypes.Transaction]:
     try:
         currencyId = bytes.fromhex(currencyId)
         address = bytes.fromhex(address)
@@ -297,19 +297,37 @@ async def getSwapInfo(currencyId:str):
     
     connection, cursor = DBConnection()
 
-    cursor.execute("SELECT reserve_BaseCurrency, reserve_PairCurrency, swap_fee FROM liquidity_pools WHERE pairCurrency = %s",(currencyId,))
+    cursor.execute("SELECT reserveBaseCurrency, reservePairCurrency, swapFee FROM liquidity_pools WHERE pairCurrency = %s",(currencyId,))
+    poolInfo = list(cursor.fetchall())
+    cursor.execute("SELECT swapType, inputAmount, outputAmount, timestamp FROM swap_history WHERE pairCurrency = %s LIMIT 10",(currencyId,))
+    swapHistory = list(cursor.fetchall())
+    cursor.close()
+    connection.close()
+
+    if not poolInfo:
+        raise HTTPException(400, "pool does not exist")
+
+    response = {"reserveBaseCurrency":poolInfo[0]['reserveBaseCurrency'],
+                "reservePairCurrency":poolInfo[0]['reservePairCurrency'],
+                "swapFee":poolInfo[0]['swapFee'],
+                "history":swapHistory}
+
+    return response
+
+@router.get("/swaps")
+async def getSwapInfo():
+    connection, cursor = DBConnection()
+    pools = {}
+
+    cursor.execute("SELECT pairCurrency, reserveBaseCurrency, reservePairCurrency, swapFee FROM liquidity_pools ORDER BY pairCurrency ASC")
     results = list(cursor.fetchall())
     cursor.close()
     connection.close()
 
-    if not results:
-        raise HTTPException(400, "pool does not exist")
+    for pool in results:
+        pools[pool['pairCurrency'].hex()] = dictFormat(pool)
 
-    response = {"reserve_BaseCurrency":str(results[0]['reserve_BaseCurrency']),
-                "reserve_PairCurrency":str(results[0]['reserve_PairCurrency']),
-                "swap_fee":str(results[0]['swap_fee'])}
-
-    return response
+    return pools
 
 class transactionPost(BaseModel):
     transactionId:str
@@ -319,7 +337,7 @@ class transactionPost(BaseModel):
     publicKey:str
 
 @router.post("/transaction")
-async def postTransaction(postData: transactionPost):
+async def postTransaction(postData: transactionPost) -> responseTypes.Transaction:
     try:
         sourceWallet = pigeonium.Wallet.fromPublic(bytes.fromhex(postData.publicKey))
         
@@ -341,10 +359,9 @@ async def postTransaction(postData: transactionPost):
         raise HTTPException(400, "cannot be sent to yourself")
     
     connection, cursor = DBConnection()
-    cursor.execute("SELECT `indexId`, `transactionId` FROM `transactions` ORDER BY indexId DESC LIMIT 1")
+    cursor.execute("SELECT `indexId` FROM `transactions` ORDER BY indexId DESC LIMIT 1")
     latest = cursor.fetchall()
     latestIndexId = int(latest[0]['indexId'])
-    latestTxId = bytes(latest[0]['transactionId'])
 
     tx = pigeonium.Transaction()
     tx.transactionId = transactionId
@@ -352,7 +369,7 @@ async def postTransaction(postData: transactionPost):
     tx.dest = dest
     tx.currencyId = currencyId
     tx.amount = amount
-    tx.previous = latestTxId
+    tx.networkId = Config.Network.NetworkId
     tx.publicKey = publicKey
 
     txCheck, _ = tx.verify()
@@ -374,8 +391,8 @@ async def postTransaction(postData: transactionPost):
     if tx.dest == bytes(16):
         cursor.execute("UPDATE `currency` SET `supply` = `supply` - %s WHERE `currencyId` = %s", (tx.amount,tx.currencyId))
 
-    cursor.execute("INSERT INTO `transactions` (`indexId`,`transactionId`,`timestamp`,`source`,`dest`,`currencyId`,`amount`,`previous`,`publicKey`,`adminSignature`)"
-                   " VALUES (%(indexId)s,%(transactionId)s,%(timestamp)s,%(source)s,%(dest)s,%(currencyId)s,%(amount)s,%(previous)s,%(publicKey)s,%(adminSignature)s)",
+    cursor.execute("INSERT INTO `transactions` (`indexId`,`transactionId`,`timestamp`,`source`,`dest`,`currencyId`,`amount`,`networkId`,`publicKey`,`adminSignature`)"
+                   " VALUES (%(indexId)s,%(transactionId)s,%(timestamp)s,%(source)s,%(dest)s,%(currencyId)s,%(amount)s,%(networkId)s,%(publicKey)s,%(adminSignature)s)",
                    tx.toDict())
     
     cursor.execute("DELETE FROM `balance` WHERE amount = 0")
@@ -397,7 +414,7 @@ class IssuancePost(BaseModel):
     senderSignature:str
 
 @router.post("/issuance")
-async def postIssuanceTransaction(IssuanceData: IssuancePost):
+async def postIssuanceTransaction(IssuanceData: IssuancePost) -> responseTypes.Transaction:
     try:
         senderWallet = pigeonium.Wallet.fromPublic(bytes.fromhex(IssuanceData.senderPublicKey))
         if not senderWallet.address in Config.Network.superiorAddress:
@@ -439,12 +456,11 @@ async def postIssuanceTransaction(IssuanceData: IssuancePost):
                    (newCurrency.currencyId, newCurrency.name, newCurrency.symbol, newCurrency.inputData, newCurrency.issuer, amount,
                     newCurrency.issuerSignature, newCurrency.publicKey))
 
-    cursor.execute("SELECT `indexId`,`transactionId` FROM `transactions` ORDER BY indexId DESC LIMIT 1")
+    cursor.execute("SELECT `indexId` FROM `transactions` ORDER BY indexId DESC LIMIT 1")
     TxDict = cursor.fetchall()[0]
-    previousTxIndex = TxDict['indexId']
-    previousTxId = TxDict['transactionId']
+    previousTxIndex = int(TxDict['indexId'])
 
-    tx = pigeonium.AdminUtil.issuanceTx(newCurrency,amount,previousTxId,adminWallet)
+    tx = pigeonium.AdminUtil.issuanceTx(newCurrency,amount,adminWallet)
     
     txCheck, _ = tx.verify()
     if txCheck == False:
@@ -456,8 +472,8 @@ async def postIssuanceTransaction(IssuanceData: IssuancePost):
     cursor.execute("INSERT INTO `balance` (address, currencyId, amount) VALUES (%s, %s, %s) ON DUPLICATE KEY UPDATE amount = amount + VALUES(amount)",
                    (tx.dest,tx.currencyId,tx.amount))
 
-    cursor.execute("INSERT INTO `transactions` (`indexId`,`transactionId`,`timestamp`,`source`,`dest`,`currencyId`,`amount`,`previous`,`publicKey`,`adminSignature`)"
-                   " VALUES (%(indexId)s,%(transactionId)s,%(timestamp)s,%(source)s,%(dest)s,%(currencyId)s,%(amount)s,%(previous)s,%(publicKey)s,%(adminSignature)s)",
+    cursor.execute("INSERT INTO `transactions` (`indexId`,`transactionId`,`timestamp`,`source`,`dest`,`currencyId`,`amount`,`networkId`,`publicKey`,`adminSignature`)"
+                   " VALUES (%(indexId)s,%(transactionId)s,%(timestamp)s,%(source)s,%(dest)s,%(currencyId)s,%(amount)s,%(networkId)s,%(publicKey)s,%(adminSignature)s)",
                    tx.toDict())
     
     cursor.execute("DELETE FROM `balance` WHERE amount = 0")
@@ -473,7 +489,7 @@ class swapTransactionPost(BaseModel):
     publicKey:str
 
 @router.post("/swap/buy/{pairCurrencyId}")
-async def postSwapBuy(pairCurrencyId:str,postData:swapTransactionPost):
+async def postSwapBuy(pairCurrencyId:str,postData:swapTransactionPost) -> responseTypes.Transaction:
     try:
         swapPoolWallet = pigeonium.Wallet.fromPrivate(Config.Network.SwapWalletPrivateKey)
         sourceWallet = pigeonium.Wallet.fromPublic(bytes.fromhex(postData.publicKey))
@@ -482,7 +498,6 @@ async def postSwapBuy(pairCurrencyId:str,postData:swapTransactionPost):
         transactionId = bytes.fromhex(postData.transactionId)
         source = sourceWallet.address
         dest = swapPoolWallet.address
-        currencyId = bytes(16)
         amount = postData.amount
         publicKey = sourceWallet.publicKey
 
@@ -495,7 +510,7 @@ async def postSwapBuy(pairCurrencyId:str,postData:swapTransactionPost):
     
     connection, cursor = DBConnection()
     
-    cursor.execute("SELECT reserve_BaseCurrency FROM liquidity_pools WHERE pairCurrency = %s",(currencyId,))
+    cursor.execute("SELECT reserveBaseCurrency FROM liquidity_pools WHERE pairCurrency = %s",(pairCuId,))
     results = list(cursor.fetchall())
 
     if not results:
@@ -505,15 +520,14 @@ async def postSwapBuy(pairCurrencyId:str,postData:swapTransactionPost):
     cursor.execute("SELECT `indexId`, `transactionId` FROM `transactions` ORDER BY indexId DESC LIMIT 1")
     latest = cursor.fetchall()
     latestIndexId = int(latest[0]['indexId'])
-    latestTxId = bytes(latest[0]['transactionId'])
 
     tx = pigeonium.Transaction()
     tx.transactionId = transactionId
     tx.source = source
     tx.dest = dest
-    tx.currencyId = currencyId
+    tx.currencyId = bytes(16)
     tx.amount = amount
-    tx.previous = latestTxId
+    tx.networkId = Config.Network.NetworkId
     tx.publicKey = publicKey
 
     txCheck, _ = tx.verify()
@@ -534,8 +548,8 @@ async def postSwapBuy(pairCurrencyId:str,postData:swapTransactionPost):
     if tx.dest == bytes(16):
         cursor.execute("UPDATE `currency` SET `supply` = `supply` - %s WHERE `currencyId` = %s", (tx.amount,tx.currencyId))
 
-    cursor.execute("INSERT INTO `transactions` (`indexId`,`transactionId`,`timestamp`,`source`,`dest`,`currencyId`,`amount`,`previous`,`publicKey`,`adminSignature`)"
-                   " VALUES (%(indexId)s,%(transactionId)s,%(timestamp)s,%(source)s,%(dest)s,%(currencyId)s,%(amount)s,%(previous)s,%(publicKey)s,%(adminSignature)s)",
+    cursor.execute("INSERT INTO `transactions` (`indexId`,`transactionId`,`timestamp`,`source`,`dest`,`currencyId`,`amount`,`networkId`,`publicKey`,`adminSignature`)"
+                   " VALUES (%(indexId)s,%(transactionId)s,%(timestamp)s,%(source)s,%(dest)s,%(currencyId)s,%(amount)s,%(networkId)s,%(publicKey)s,%(adminSignature)s)",
                    tx.toDict())
     
     cursor.execute("SET @output_amount = 0;")
@@ -544,7 +558,7 @@ async def postSwapBuy(pairCurrencyId:str,postData:swapTransactionPost):
 
     output_amount = int(cursor.fetchall()[0]['@output_amount'])
     
-    swapTx = pigeonium.Transaction.create(swapPoolWallet, source, pairCuId, output_amount, tx.transactionId)
+    swapTx = pigeonium.Transaction.create(swapPoolWallet, source, pairCuId, output_amount)
     swapTx.adminConfirm(tx.indexId + 1, int(time()), adminWallet)
     
     cursor.execute("SELECT `amount` FROM `balance` WHERE `address` = %s AND `currencyId` = %s AND `amount` >= %s",(swapTx.source,swapTx.currencyId,swapTx.amount))
@@ -555,12 +569,9 @@ async def postSwapBuy(pairCurrencyId:str,postData:swapTransactionPost):
     cursor.execute("UPDATE `balance` SET `amount` = `amount` - %s WHERE `address` = %s AND `currencyId` = %s", (swapTx.amount,swapTx.source,swapTx.currencyId))
     cursor.execute("INSERT INTO `balance` (address, currencyId, amount) VALUES (%s, %s, %s) ON DUPLICATE KEY UPDATE amount = amount + VALUES(amount)",
                    (swapTx.dest,swapTx.currencyId,swapTx.amount))
-    
-    if swapTx.dest == bytes(16):
-        cursor.execute("UPDATE `currency` SET `supply` = `supply` - %s WHERE `currencyId` = %s", (swapTx.amount,swapTx.currencyId))
 
-    cursor.execute("INSERT INTO `transactions` (`indexId`,`transactionId`,`timestamp`,`source`,`dest`,`currencyId`,`amount`,`previous`,`publicKey`,`adminSignature`)"
-                   " VALUES (%(indexId)s,%(transactionId)s,%(timestamp)s,%(source)s,%(dest)s,%(currencyId)s,%(amount)s,%(previous)s,%(publicKey)s,%(adminSignature)s)",
+    cursor.execute("INSERT INTO `transactions` (`indexId`,`transactionId`,`timestamp`,`source`,`dest`,`currencyId`,`amount`,`networkId`,`publicKey`,`adminSignature`)"
+                   " VALUES (%(indexId)s,%(transactionId)s,%(timestamp)s,%(source)s,%(dest)s,%(currencyId)s,%(amount)s,%(networkId)s,%(publicKey)s,%(adminSignature)s)",
                    swapTx.toDict())
     
     cursor.execute("DELETE FROM `balance` WHERE amount = 0")
@@ -571,7 +582,7 @@ async def postSwapBuy(pairCurrencyId:str,postData:swapTransactionPost):
     return dictFormat(swapTx.toDict())
 
 @router.post("/swap/sell/{pairCurrencyId}")
-async def postSwapSell(pairCurrencyId:str,postData:swapTransactionPost):
+async def postSwapSell(pairCurrencyId:str,postData:swapTransactionPost) -> responseTypes.Transaction:
     try:
         swapPoolWallet = pigeonium.Wallet.fromPrivate(Config.Network.SwapWalletPrivateKey)
         sourceWallet = pigeonium.Wallet.fromPublic(bytes.fromhex(postData.publicKey))
@@ -580,7 +591,6 @@ async def postSwapSell(pairCurrencyId:str,postData:swapTransactionPost):
         transactionId = bytes.fromhex(postData.transactionId)
         source = sourceWallet.address
         dest = swapPoolWallet.address
-        currencyId = pairCuId
         amount = postData.amount
         publicKey = sourceWallet.publicKey
 
@@ -593,7 +603,7 @@ async def postSwapSell(pairCurrencyId:str,postData:swapTransactionPost):
     
     connection, cursor = DBConnection()
     
-    cursor.execute("SELECT reserve_BaseCurrency FROM liquidity_pools WHERE pairCurrency = %s",(currencyId,))
+    cursor.execute("SELECT reserveBaseCurrency FROM liquidity_pools WHERE pairCurrency = %s",(pairCuId,))
     results = list(cursor.fetchall())
 
     if not results:
@@ -603,15 +613,14 @@ async def postSwapSell(pairCurrencyId:str,postData:swapTransactionPost):
     cursor.execute("SELECT `indexId`, `transactionId` FROM `transactions` ORDER BY indexId DESC LIMIT 1")
     latest = cursor.fetchall()
     latestIndexId = int(latest[0]['indexId'])
-    latestTxId = bytes(latest[0]['transactionId'])
 
     tx = pigeonium.Transaction()
     tx.transactionId = transactionId
     tx.source = source
     tx.dest = dest
-    tx.currencyId = currencyId
+    tx.currencyId = pairCuId
     tx.amount = amount
-    tx.previous = latestTxId
+    tx.networkId = Config.Network.NetworkId
     tx.publicKey = publicKey
 
     txCheck, _ = tx.verify()
@@ -630,11 +639,8 @@ async def postSwapSell(pairCurrencyId:str,postData:swapTransactionPost):
     cursor.execute("INSERT INTO `balance` (address, currencyId, amount) VALUES (%s, %s, %s) ON DUPLICATE KEY UPDATE amount = amount + VALUES(amount)",
                    (tx.dest,tx.currencyId,tx.amount))
     
-    if tx.dest == bytes(16):
-        cursor.execute("UPDATE `currency` SET `supply` = `supply` - %s WHERE `currencyId` = %s", (tx.amount,tx.currencyId))
-
-    cursor.execute("INSERT INTO `transactions` (`indexId`,`transactionId`,`timestamp`,`source`,`dest`,`currencyId`,`amount`,`previous`,`publicKey`,`adminSignature`)"
-                   " VALUES (%(indexId)s,%(transactionId)s,%(timestamp)s,%(source)s,%(dest)s,%(currencyId)s,%(amount)s,%(previous)s,%(publicKey)s,%(adminSignature)s)",
+    cursor.execute("INSERT INTO `transactions` (`indexId`,`transactionId`,`timestamp`,`source`,`dest`,`currencyId`,`amount`,`networkId`,`publicKey`,`adminSignature`)"
+                   " VALUES (%(indexId)s,%(transactionId)s,%(timestamp)s,%(source)s,%(dest)s,%(currencyId)s,%(amount)s,%(networkId)s,%(publicKey)s,%(adminSignature)s)",
                    tx.toDict())
     
     cursor.execute("SET @output_amount = 0;")
@@ -643,7 +649,7 @@ async def postSwapSell(pairCurrencyId:str,postData:swapTransactionPost):
 
     output_amount = int(cursor.fetchall()[0]['@output_amount'])
     
-    swapTx = pigeonium.Transaction.create(swapPoolWallet, source, bytes(16), output_amount, tx.transactionId)
+    swapTx = pigeonium.Transaction.create(swapPoolWallet, source, bytes(16), output_amount)
     swapTx.adminConfirm(tx.indexId + 1, int(time()), adminWallet)
     
     cursor.execute("SELECT `amount` FROM `balance` WHERE `address` = %s AND `currencyId` = %s AND `amount` >= %s",(swapTx.source,swapTx.currencyId,swapTx.amount))
@@ -658,8 +664,8 @@ async def postSwapSell(pairCurrencyId:str,postData:swapTransactionPost):
     if swapTx.dest == bytes(16):
         cursor.execute("UPDATE `currency` SET `supply` = `supply` - %s WHERE `currencyId` = %s", (swapTx.amount,swapTx.currencyId))
 
-    cursor.execute("INSERT INTO `transactions` (`indexId`,`transactionId`,`timestamp`,`source`,`dest`,`currencyId`,`amount`,`previous`,`publicKey`,`adminSignature`)"
-                   " VALUES (%(indexId)s,%(transactionId)s,%(timestamp)s,%(source)s,%(dest)s,%(currencyId)s,%(amount)s,%(previous)s,%(publicKey)s,%(adminSignature)s)",
+    cursor.execute("INSERT INTO `transactions` (`indexId`,`transactionId`,`timestamp`,`source`,`dest`,`currencyId`,`amount`,`networkId`,`publicKey`,`adminSignature`)"
+                   " VALUES (%(indexId)s,%(transactionId)s,%(timestamp)s,%(source)s,%(dest)s,%(currencyId)s,%(amount)s,%(networkId)s,%(publicKey)s,%(adminSignature)s)",
                    swapTx.toDict())
     
     cursor.execute("DELETE FROM `balance` WHERE amount = 0")
@@ -668,3 +674,48 @@ async def postSwapSell(pairCurrencyId:str,postData:swapTransactionPost):
     connection.close()
 
     return dictFormat(swapTx.toDict())
+
+
+class SwapConfigsPost(BaseModel):
+    reserveBaseCurrency:int
+    reservePairCurrency:int
+    swapFee:int
+    senderSignature:str
+    senderPublicKey:str
+
+@router.post("/swap/set/{pairCurrencyId}")
+async def postIssuanceTransaction(pairCurrencyId:str,SwapConfigs:SwapConfigsPost):
+    try:
+        senderWallet = pigeonium.Wallet.fromPublic(bytes.fromhex(SwapConfigs.senderPublicKey))
+        if not senderWallet.address in Config.Network.superiorAddress:
+            raise HTTPException(403, "sender's address is not present in 'superiorAddress'")
+        senderSignature = bytes.fromhex(SwapConfigs.senderSignature)
+        poolPairCurrencyId = bytes.fromhex(pairCurrencyId)
+    except ValueError:
+        raise HTTPException(400, "params are invalid format")
+    except Exception as e:
+        raise e
+    
+    reserveBaseCurrency = SwapConfigs.reserveBaseCurrency
+    reservePairCurrency = SwapConfigs.reservePairCurrency
+    swapFee = SwapConfigs.swapFee
+
+    setData = poolPairCurrencyId + reserveBaseCurrency.to_bytes(8,'big') + reservePairCurrency.to_bytes(8,'big') + swapFee.to_bytes(8,'big')
+
+    if not senderWallet.verifySignature(setData,senderSignature):
+        raise HTTPException(400, "invalid 'senderSignature'")
+    
+    connection, cursor = DBConnection()
+
+    cursor.execute("INSERT `liquidity_pools` (`pairCurrency`, `reserveBaseCurrency`, `reservePairCurrency`, `swapFee`) VALUES (%s, %s, %s, %s) "
+                   "ON DUPLICATE KEY UPDATE reserveBaseCurrency = VALUES(reserveBaseCurrency), reservePairCurrency = VALUES(reservePairCurrency), swapFee = VALUES(swapFee)",
+                   (poolPairCurrencyId,reserveBaseCurrency,reservePairCurrency,swapFee))
+    
+    connection.commit()
+    connection.close()
+
+    response = {"reserveBaseCurrency":str(reserveBaseCurrency),
+                "reservePairCurrency":str(reservePairCurrency),
+                "swapFee":str(swapFee)}
+
+    return response
